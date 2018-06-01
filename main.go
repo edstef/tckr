@@ -3,78 +3,131 @@ package main
 import (
   "fmt"
   "log"
-  "io/ioutil"
+  "time"
+  "strings"
+  // "io/ioutil"
   "encoding/json"
   "net/http"
   "github.com/gorilla/mux"
 )
 
-// type TimeSeriesData struct {
-//   OneOpen    string `json:"1. open"`
-//   TwoHigh    string `json:"2. high"`
-//   ThreeLow   string `json:"3. low"`
-//   FourClose  string `json:"4. close"`
-//   FiveVolume string `json:"5. volume"`
-// }
-
-var AVKey string
+const LineLength = 22
 
 type StockResponse struct {
-	MetaData struct {
-		Information     string `json:"1. Information"`
-		Symbol          string `json:"2. Symbol"`
-		LastRefreshed   string `json:"3. Last Refreshed"`
-		Interval        string `json:"4. Interval"`
-		OutputSize      string `json:"5. Output Size"`
-		TimeZone        string `json:"6. Time Zone"`
-  } `json:"Meta Data"`
-  TimeSeriesData map[string]map[string]string `json:"Time Series (1min)"`
+  Symbol            string  `json:"symbol`
+  CompanyName       string  `json:"companyName"`
+  PrimaryExchange   string  `json:"primaryExchange"`
+  High              float64  `json:"high"`
+  Low               float64  `json:"low"`
+  LatestPrice       float64 `json:"latestPrice"`
+  LatestSource      string  `json:"latestSource"`
+  LatestUpdate      int64   `json:"latestUpdate"`
+  Change            float64 `json:"change"`
+  ChangePercent     float64 `json:"changePercent"`
+  Volume            int64   `json:"latestVolume"`
+  PE                float64 `json:"peRatio"` 
 }
 
-func fetchStock(sym string) {
 
-  AVURL := "https://www.alphavantage.co/query?"
-  AVFn := "function=TIME_SERIES_INTRADAY"
-  AVSym := "&symbol=" + sym
-  AVInterval := "&interval=1min"
-  AVFullKey := "&apikey=" + AVKey
+func convertTime(t int64) (string, string) {
+	// Returned in miliseconds but funcation expects seconds
+	tm := time.Unix(t/1000, 0)
 
-  resp, err := http.Get(AVURL + AVFn + AVSym + AVInterval + AVFullKey)
+  location, err := time.LoadLocation("EST")
+  
+  if err != nil {
+    panic(err)
+  }
+
+  r := strings.Split(tm.In(location).String(), " ")
+  
+  return r[0], r[1]
+}
+
+// TODO: Create formatting class? with these functions
+
+func formatInteger() {
+  // Format integer spacing
+  // 1000000 -> 1 000 000
+}
+
+func formatBodyLine(key string, value string) string {
+  
+  line := fmt.Sprintf("│ %s: %s", key, value)
+  start := len(key) + len(value)
+
+  if value[0] == 27 { // 27 is escape
+    start -= 11
+    // TODO: pass in value struct, indicating that it is a colour type
+    // and that there are an additional 11 characters
+  }
+
+  for i := start; i < LineLength; i++ {
+    line += " "
+  }
+
+  line += "│\n"
+
+  return line
+}
+
+func formatPlusMinus(val float64) string {
+  if val >= 0 {
+    return fmt.Sprintf("\x1b[32;1m+%.2f\x1b[0m", val)
+  } else {
+    return fmt.Sprintf("\x1b[31;1m%.2f\x1b[0m", val)
+  }
+}
+
+func fetchStock(w http.ResponseWriter, r *http.Request) {
+  params := mux.Vars(r)
+  sym := "VOO" // Default stock to return
+
+  if params["stock"] != "" {
+    sym = strings.ToUpper(params["stock"])
+  }
+
+  query := fmt.Sprintf("https://api.iextrading.com/1.0/stock/%s/quote", sym)
+
+  resp, err := http.Get(query)
 
   if err != nil {
-    fmt.Println("Error Fetching")
+    panic(err)
   }
+
+  defer resp.Body.Close()
 
   data := new(StockResponse)
 
   json.NewDecoder(resp.Body).Decode(data)
 
-  lastRefreshed := data.MetaData.LastRefreshed
 
+  if (StockResponse{}) == *data {
+    fmt.Println("Ticker not found")
+  } else {
+    // TODO: return data will change if they ask for long version, generalize this code
 
-  fmt.Println(data.TimeSeriesData[lastRefreshed]["1. open"])
-}
+    l0 := "┌─────────────────────────┐\n"
+    l1 := "\n"// Format header line
+    l2 := "├─────────────────────────┤\n"
+    l3 := formatBodyLine("Price", fmt.Sprintf("%.2f", data.LatestPrice))
+    l4 := formatBodyLine("Change", formatPlusMinus(data.Change))
+    l5 := formatBodyLine("Volume", fmt.Sprintf("%d", data.Volume))
+    l6 := "└─────────────────────────┘\n"
 
-func getDefault(w http.ResponseWriter, r *http.Request) {
-  fetchStock("VOO")
-}
+    str := l0 + l1 + l2 + l3 + l4 + l5 + l6
 
-func getStock(w http.ResponseWriter, r *http.Request) {
-  params := mux.Vars(r)
-
-  fetchStock(params["stock"])
+    fmt.Println(str)
+    w.Write([]byte(str))
+  }
 }
 
 func main() {
-
-  tmpKey, _ := ioutil.ReadFile("AVKEY.txt")
-
-  AVKey = string(tmpKey)
   
   router := mux.NewRouter()
 
-  router.HandleFunc("/", getDefault).Methods("GET")
-  router.HandleFunc("/{stock}", getStock).Methods("GET")
+  router.HandleFunc("/", fetchStock).Methods("GET")
+  router.HandleFunc("/{stock}", fetchStock).Methods("GET")
 
   fmt.Println("Server started on port 8000")  
   log.Fatal(http.ListenAndServe(":8000", router))
